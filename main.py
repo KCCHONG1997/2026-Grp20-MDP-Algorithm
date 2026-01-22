@@ -1,12 +1,172 @@
-import time
+import time, os
 from algo.algo import MazeSolver 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from model import *
 from helper import command_generator
 
 app = Flask(__name__)
 CORS(app)
+
+# Lightweight browser UI for visualizing /path
+@app.route('/', methods=['GET'])
+def ui():
+    html = """
+<!doctype html>
+<meta charset=\"utf-8\">
+<title>MDP Path Viewer</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; }
+  #row { display: flex; gap: 16px; flex-wrap: wrap; }
+  textarea { width: 420px; height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  canvas { border: 1px solid #999; image-rendering: pixelated; }
+  pre { background: #f6f8fa; padding: 8px; max-height: 220px; overflow:auto; }
+  button { padding: 6px 12px; }
+</style>
+<div id=\"row\">
+  <div>
+    <h3>Obstacles JSON</h3>
+    <textarea id=\"obs\">{
+  \"obstacles\": [
+    {\"x\": 5,  \"y\": 10, \"id\": 1, \"d\": 2},
+    {\"x\": 15, \"y\": 8,  \"id\": 2, \"d\": 0},
+    {\"x\": 4,  \"y\": 14, \"id\": 3, \"d\": 6},
+    {\"x\": 10, \"y\": 15, \"id\": 4, \"d\": 4},
+    {\"x\": 12, \"y\": 5,  \"id\": 5, \"d\": 2}
+  ],
+  \"robot_x\": 1, \"robot_y\": 1, \"robot_dir\": 0,
+  \"retrying\": false
+}</textarea><br/>
+    <button id=\"run\">Run /path</button>
+    <h3>Commands</h3>
+    <pre id=\"cmds\"></pre>
+  </div>
+  <div>
+    <canvas id=\"c\" width=\"520\" height=\"520\"></canvas>
+    <div>20×20 grid (10 cm per cell)</div>
+  </div>
+</div>
+<script>
+const WIDTH=20, HEIGHT=20, CELL=24, PAD=20;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+function drawGrid() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle = '#ddd';
+  for (let i=0;i<=WIDTH;i++) {
+    ctx.beginPath(); ctx.moveTo(PAD+i*CELL, PAD); ctx.lineTo(PAD+i*CELL, PAD+HEIGHT*CELL); ctx.stroke();
+  }
+  for (let j=0;j<=HEIGHT;j++) {
+    ctx.beginPath(); ctx.moveTo(PAD, PAD+j*CELL); ctx.lineTo(PAD+WIDTH*CELL, PAD+j*CELL); ctx.stroke();
+  }
+}
+function toCanvas(x, y) { // grid origin bottom-left -> canvas origin top-left
+  const cx = PAD + x*CELL + CELL/2;
+  const cy = PAD + (HEIGHT-1 - y)*CELL + CELL/2;
+  return [cx, cy];
+}
+function drawObstacles(obstacles){
+  obstacles.forEach(o=>{
+    const [cx,cy] = toCanvas(o.x, o.y);
+    // draw cell
+    ctx.fillStyle = '#d9534f';
+    ctx.fillRect(cx-CELL/2, cy-CELL/2, CELL, CELL);
+    ctx.strokeStyle = '#a94442';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx-CELL/2, cy-CELL/2, CELL, CELL);
+    // id label
+    if (typeof o.id !== 'undefined') {
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '12px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(o.id), cx, cy);
+    }
+    // facing indicator: triangle + highlight on the facing side
+    if (typeof o.d !== 'undefined' && o.d !== 8) {
+      // triangle
+      drawHeading(o.x, o.y, o.d, '#6f42c1', 0.9);
+      // side highlight
+      const x0 = cx - CELL/2, y0 = cy - CELL/2;
+      ctx.strokeStyle = '#6f42c1';
+      ctx.lineWidth = 3;
+      if (o.d === 0) { // NORTH
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0+CELL, y0); ctx.stroke();
+      } else if (o.d === 2) { // EAST
+        ctx.beginPath(); ctx.moveTo(x0+CELL, y0); ctx.lineTo(x0+CELL, y0+CELL); ctx.stroke();
+      } else if (o.d === 4) { // SOUTH
+        ctx.beginPath(); ctx.moveTo(x0, y0+CELL); ctx.lineTo(x0+CELL, y0+CELL); ctx.stroke();
+      } else if (o.d === 6) { // WEST
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0, y0+CELL); ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+    }
+  });
+}
+function angleFor(d){ // 0=N,2=E,4=S,6=W -> radians (triangle canonical points EAST)
+  switch(d){
+    case 0: return -Math.PI/2; // NORTH
+    case 2: return 0;          // EAST
+    case 4: return Math.PI/2;  // SOUTH
+    case 6: return Math.PI;    // WEST
+    default: return 0;
+  }
+}
+function drawHeading(x,y,d,color='rgba(0,0,0,0.65)'){
+  const [cx,cy] = toCanvas(x,y);
+  const ang = angleFor(d);
+  const s = CELL * 0.35; // triangle size
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(ang);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(s, 0);             // tip (points EAST before rotation)
+  ctx.lineTo(-s*0.6, -s*0.5);   // back-top
+  ctx.lineTo(-s*0.6,  s*0.5);   // back-bottom
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+function drawPath(path){
+  if (!path || path.length===0) return;
+  ctx.strokeStyle = '#007bff'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  let [sx,sy] = toCanvas(path[0].x, path[0].y);
+  ctx.moveTo(sx,sy);
+  for (let i=1;i<path.length;i++) {
+    const [px,py] = toCanvas(path[i].x, path[i].y);
+    ctx.lineTo(px,py);
+  }
+  ctx.stroke();
+  // draw headings along the path (every step)
+  for (let i=0;i<path.length;i++) {
+    const st = path[i];
+    if (typeof st.d !== 'undefined') drawHeading(st.x, st.y, st.d);
+  }
+  // start/end markers
+  ctx.fillStyle = '#28a745';
+  ctx.beginPath(); ctx.arc(sx,sy,5,0,Math.PI*2); ctx.fill();
+  const [ex,ey] = toCanvas(path[path.length-1].x, path[path.length-1].y);
+  ctx.fillStyle = '#ff9800';
+  ctx.beginPath(); ctx.arc(ex,ey,5,0,Math.PI*2); ctx.fill();
+}
+async function run(){
+  drawGrid();
+  const payload = JSON.parse(document.getElementById('obs').value);
+  const res = await fetch('/path', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+  const json = await res.json();
+  drawObstacles(payload.obstacles || []);
+  drawPath(json.data?.path || []);
+  document.getElementById('cmds').textContent = JSON.stringify(json.data?.commands || [], null, 2);
+}
+document.getElementById('run').onclick = run;
+drawGrid();
+</script>
+"""
+    return Response(html, mimetype="text/html")
+
 #model = load_model()
 model = None
 @app.route('/status', methods=['GET'])
