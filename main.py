@@ -2,7 +2,7 @@ import time, os
 from algo.algo import MazeSolver 
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-from model import *
+from model import load_model, predict_image, predict_image_week_9, stitch_image, stitch_image_own
 from helper import command_generator
 
 app = Flask(__name__)
@@ -86,7 +86,7 @@ function drawObstacles(obstacles){
     // facing indicator: triangle + highlight on the facing side
     if (typeof o.d !== 'undefined' && o.d !== 8) {
       // triangle
-      drawHeading(o.x, o.y, o.d, '#6f42c1', 0.9);
+      drawHeading(o.x, o.y, o.d, '#6f42c1');
       // side highlight
       const x0 = cx - CELL/2, y0 = cy - CELL/2;
       ctx.strokeStyle = '#6f42c1';

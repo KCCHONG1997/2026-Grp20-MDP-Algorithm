@@ -247,7 +247,7 @@ class MazeSolver:
                 if key in turn_map:
                     for turn_dx, turn_dy in turn_map[key]:
                         nx, ny = x + turn_dx, y + turn_dy
-                        if self.grid.reachable(nx, ny, turn=True) and self.grid.reachable(x, y, preTurn=True):
+                        if self.grid.reachable(nx, ny, turn=True) and self.grid.reachable(x, y, pre_turn=True):
                             neighbors.append((nx, ny, md, self.get_safe_cost(nx, ny) + 10))
         
         return neighbors
