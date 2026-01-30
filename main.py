@@ -1,5 +1,5 @@
 import time, os
-from algo.algo import MazeSolver 
+from algo.algo import MazeSolver
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from model import load_model, predict_image, predict_image_week_9, stitch_image, stitch_image_own
@@ -13,7 +13,7 @@ CORS(app)
 def ui():
     html = """
 <!doctype html>
-<meta charset=\"utf-8\">
+<meta charset=\\"utf-8\\">
 <title>MDP Path Viewer</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 16px; }
@@ -23,26 +23,26 @@ def ui():
   pre { background: #f6f8fa; padding: 8px; max-height: 220px; overflow:auto; }
   button { padding: 6px 12px; }
 </style>
-<div id=\"row\">
+<div id=\\"row\\">
   <div>
     <h3>Obstacles JSON</h3>
-    <textarea id=\"obs\">{
-  \"obstacles\": [
-    {\"x\": 5,  \"y\": 10, \"id\": 1, \"d\": 2},
-    {\"x\": 15, \"y\": 8,  \"id\": 2, \"d\": 0},
-    {\"x\": 4,  \"y\": 14, \"id\": 3, \"d\": 6},
-    {\"x\": 10, \"y\": 15, \"id\": 4, \"d\": 4},
-    {\"x\": 12, \"y\": 5,  \"id\": 5, \"d\": 2}
+    <textarea id=\\"obs\\">{
+  \\"obstacles\\": [
+    {\\"x\\": 5,  \\"y\\": 10, \\"id\\": 1, \\"d\\": 2},
+    {\\"x\\": 15, \\"y\\": 8,  \\"id\\": 2, \\"d\\": 0},
+    {\\"x\\": 4,  \\"y\\": 14, \\"id\\": 3, \\"d\\": 6},
+    {\\"x\\": 10, \\"y\\": 15, \\"id\\": 4, \\"d\\": 4},
+    {\\"x\\": 12, \\"y\\": 5,  \\"id\\": 5, \\"d\\": 2}
   ],
-  \"robot_x\": 1, \"robot_y\": 1, \"robot_dir\": 0,
-  \"retrying\": false
+  \\"robot_x\\": 1, \\"robot_y\\": 1, \\"robot_dir\\": 0,
+  \\"retrying\\": false
 }</textarea><br/>
-    <button id=\"run\">Run /path</button>
+    <button id=\\"run\\">Run /path</button>
     <h3>Commands</h3>
-    <pre id=\"cmds\"></pre>
+    <pre id=\\"cmds\\"></pre>
   </div>
   <div>
-    <canvas id=\"c\" width=\"520\" height=\"520\"></canvas>
+    <canvas id=\\"c\\" width=\\"520\\" height=\\"520\\"></canvas>
     <div>20×20 grid (10 cm per cell)</div>
   </div>
 </div>
@@ -167,70 +167,95 @@ drawGrid();
 """
     return Response(html, mimetype="text/html")
 
-#model = load_model()
+# model = load_model()
 model = None
+
 @app.route('/status', methods=['GET'])
 def status():
-    """
-    This is a health check endpoint to check if the server is running
-    :return: a json object with a key "result" and value "ok"
-    """
     return jsonify({"result": "ok"})
+
+
+# Incoming direction encoding (team):
+#   1=NORTH, 2=EAST, 3=SOUTH, 4=WEST
+# MazeSolver encoding (your code/UI):
+#   0=NORTH, 2=EAST, 4=SOUTH, 6=WEST
+DIR_1234_TO_0246 = {1: 0, 2: 2, 3: 4, 4: 6}
+
+def map_dir_1234_to_0246(d, default=0):
+    """
+    Accepts:
+      - team format: 1/2/3/4 -> map to 0/2/4/6
+      - already-correct: 0/2/4/6 -> keep
+    """
+    try:
+        d = int(d)
+    except Exception:
+        return default
+    if d in (0, 2, 4, 6):
+        return d
+    return DIR_1234_TO_0246.get(d, default)
 
 
 @app.route('/path', methods=['POST'])
 def path_finding():
-    """
-    This is the main endpoint for the path finding algorithm
-    :return: a json object with a key "data" and value a dictionary with keys "distance", "path", and "commands"
-    """
-    # Get the json data from the request
-    content = request.json
+    content = request.get_json(silent=True) or {}
+    print(content)
 
-    # Get the obstacles, big_turn, retrying, robot_x, robot_y, and robot_direction from the json data
-    obstacles = content['obstacles']
-    # big_turn = int(content['big_turn'])
-    retrying = content['retrying']
-    robot_x, robot_y = content['robot_x'], content['robot_y']
-    robot_direction = int(content['robot_dir'])
+    obstacles = content.get('obstacles', [])
+    retrying = bool(content.get('retrying', False))
 
-    # Initialize MazeSolver object with robot size of 20x20, bottom left corner of robot at (1,1), facing north, and whether to use a big turn or not.
+    robot_x = int(content.get('robot_x', 1))
+    robot_y = int(content.get('robot_y', 1))
+    robot_direction = map_dir_1234_to_0246(content.get('robot_dir', 1))  # default 1(N) -> 0
+
     maze_solver = MazeSolver(20, 20, robot_x, robot_y, robot_direction, big_turn=None)
 
-    # Add each obstacle into the MazeSolver. Each obstacle is defined by its x,y positions, its direction, and its id
+    normalized_obstacles = []
     for ob in obstacles:
-        maze_solver.add_obstacle(ob['x'], ob['y'], ob['d'], ob['id'])
+        x = int(ob.get('x', 0))
+        y = int(ob.get('y', 0))
+        oid = int(ob.get('id', 0))
+        d = map_dir_1234_to_0246(ob.get('d', 1))  # default 1(N)
+
+        maze_solver.add_obstacle(x, y, d, oid)
+        normalized_obstacles.append({"x": x, "y": y, "id": oid, "d": d})
 
     start = time.time()
-    # Get shortest path
     optimal_path, distance = maze_solver.get_optimal_order_dp(retrying=retrying)
     print(f"Time taken to find shortest path using A* search: {time.time() - start}s")
     print(f"Distance to travel: {distance} units")
-    
-    # Based on the shortest path, generate commands for the robot
-    commands = command_generator(optimal_path, obstacles)
 
-    # Get the starting location and add it to path_results
+    if not optimal_path:
+        return jsonify({
+            "data": {"distance": 0, "path": [], "commands": []},
+            "error": "No path returned by solver"
+        })
+
+    commands = command_generator(optimal_path, normalized_obstacles)
+
     path_results = [optimal_path[0].get_dict()]
-    # Process each command individually and append the location the robot should be after executing that command to path_results
     i = 0
     for command in commands:
-        if command.startswith("SNAP"):
+        if command.startswith("SNAP") or command.startswith("FIN"):
             continue
-        if command.startswith("FIN"):
-            continue
-        elif command.startswith("FW") or command.startswith("FS"):
-            i += int(command[2:]) // 10
-        elif command.startswith("BW") or command.startswith("BS"):
-            i += int(command[2:]) // 10
+        elif command.startswith(("FW", "FS", "BW", "BS")):
+            try:
+                i += int(command[2:]) // 10
+            except Exception:
+                pass
         else:
             i += 1
-        path_results.append(optimal_path[i].get_dict())
+
+        if 0 <= i < len(optimal_path):
+            path_results.append(optimal_path[i].get_dict())
+        else:
+            break
+
     return jsonify({
         "data": {
-            'distance': distance,
-            'path': path_results,
-            'commands': commands
+            "distance": distance,
+            "path": path_results,
+            "commands": commands
         },
         "error": None
     })
@@ -238,42 +263,29 @@ def path_finding():
 
 @app.route('/image', methods=['POST'])
 def image_predict():
-    """
-    This is the main endpoint for the image prediction algorithm
-    :return: a json object with a key "result" and value a dictionary with keys "obstacle_id" and "image_id"
-    """
     file = request.files['file']
     filename = file.filename
     file.save(os.path.join('uploads', filename))
-    # filename format: "<timestamp>_<obstacle_id>_<signal>.jpeg"
+
     constituents = file.filename.split("_")
     obstacle_id = constituents[1]
 
-    ## Week 8 ## 
-    #signal = constituents[2].strip(".jpg")
-    #image_id = predict_image(filename, model, signal)
+    image_id = predict_image_week_9(filename, model)
 
-    ## Week 9 ## 
-    # We don't need to pass in the signal anymore
-    image_id = predict_image_week_9(filename,model)
-
-    # Return the obstacle_id and image_id
-    result = {
+    return jsonify({
         "obstacle_id": obstacle_id,
         "image_id": image_id
-    }
-    return jsonify(result)
+    })
+
 
 @app.route('/stitch', methods=['GET'])
 def stitch():
-    """
-    This is the main endpoint for the stitching command. Stitches the images using two different functions, in effect creating two stitches, just for redundancy purposes
-    """
     img = stitch_image()
     img.show()
     img2 = stitch_image_own()
     img2.show()
     return jsonify({"result": "ok"})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
