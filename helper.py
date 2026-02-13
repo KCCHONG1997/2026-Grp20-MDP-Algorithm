@@ -1,5 +1,10 @@
 from consts import WIDTH, HEIGHT, Direction
 
+# Default speed for motor commands (0-100, multiplied by 71 for PWM 0-7199)
+DEFAULT_SPEED = 50
+# Global command ID counter for motor protocol
+_cmd_id = 1
+
 
 def is_valid(center_x: int, center_y: int) -> bool:
     """Checks if given position is within bounds
@@ -55,22 +60,28 @@ def _get_snap_command(screenshot_id: int, obstacle: dict, robot_position) -> str
     return f"SNAP{screenshot_id}{suffix}"
 
 
-def command_generator(states: list, obstacles: list) -> list:
-    """Takes in a list of states and generates a list of commands for the robot to follow.
+def command_generator(states: list, obstacles: list, speed: int = None) -> list:
+    """Takes in a list of states and generates a list of motor protocol commands for the robot to follow.
     
     Args:
         states: List of State objects representing robot path
         obstacles: List of obstacles, each a dict with keys 'x', 'y', 'd', 'id'
+        speed: Motor speed (0-100). If None, uses DEFAULT_SPEED
 
     Returns:
-        List of command strings for the robot (FW, BW, FR, FL, BR, BL, SNAP, FIN)
+        List of motor protocol command strings in format :[cmdId]/[component]/[command]/[param1]/[param2];
     """
 
     # Convert the list of obstacles into a dictionary with key as the obstacle id and value as the obstacle
     obstacles_dict = {ob['id']: ob for ob in obstacles}
     
-    # Initialize commands list
+    # Use provided speed or default
+    motor_speed = speed if speed is not None else DEFAULT_SPEED
+    
+    # Initialize commands list and command ID counter
     commands = []
+    global _cmd_id
+    cmd_id = 1
 
     # Iterate through each state in the list of states
     for i in range(1, len(states)):
@@ -80,14 +91,17 @@ def command_generator(states: list, obstacles: list) -> list:
         if states[i].direction == states[i - 1].direction:
             # Forward - Must be (east facing AND x value increased) OR (north facing AND y value increased)
             if (states[i].x > states[i - 1].x and states[i].direction == Direction.EAST) or (states[i].y > states[i - 1].y and states[i].direction == Direction.NORTH):
-                commands.append("FW10")
+                commands.append(f":{cmd_id}/MOTOR/FWD/{motor_speed}/10;")
+                cmd_id += 1
             # Forward - Must be (west facing AND x value decreased) OR (south facing AND y value decreased)
             elif (states[i].x < states[i-1].x and states[i].direction == Direction.WEST) or (
                     states[i].y < states[i-1].y and states[i].direction == Direction.SOUTH):
-                commands.append("FW10")
+                commands.append(f":{cmd_id}/MOTOR/FWD/{motor_speed}/10;")
+                cmd_id += 1
             # Backward - All other cases where the previous and current state is the same direction
             else:
-                commands.append("BW10")
+                commands.append(f":{cmd_id}/MOTOR/REV/{motor_speed}/10;")
+                cmd_id += 1
 
             # If any of these states has a valid screenshot ID, add a SNAP command
             if states[i].screenshot_id != -1:
@@ -112,61 +126,77 @@ def command_generator(states: list, obstacles: list) -> list:
             if states[i].direction == Direction.EAST:
                 # y value increased -> Forward Right
                 if states[i].y > states[i - 1].y:
-                    commands.append("FR{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90R/{motor_speed}/0;")
+                    cmd_id += 1
                 # y value decreased -> Backward Left
                 else:
-                    commands.append("BL{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90L/{motor_speed}/0;")
+                    cmd_id += 1
             # Facing west afterwards
             elif states[i].direction == Direction.WEST:
                 # y value increased -> Forward Left
                 if states[i].y > states[i - 1].y:
-                    commands.append("FL{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90L/{motor_speed}/0;")
+                    cmd_id += 1
                 # y value decreased -> Backward Right
                 else:
-                    commands.append("BR{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90R/{motor_speed}/0;")
+                    cmd_id += 1
             else:
                 raise Exception("Invalid turing direction")
 
         elif states[i - 1].direction == Direction.EAST:
             if states[i].direction == Direction.NORTH:
                 if states[i].y > states[i - 1].y:
-                    commands.append("FL{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90L/{motor_speed}/0;")
+                    cmd_id += 1
                 else:
-                    commands.append("BR{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90R/{motor_speed}/0;")
+                    cmd_id += 1
 
             elif states[i].direction == Direction.SOUTH:
                 if states[i].y > states[i - 1].y:
-                    commands.append("BL{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90L/{motor_speed}/0;")
+                    cmd_id += 1
                 else:
-                    commands.append("FR{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90R/{motor_speed}/0;")
+                    cmd_id += 1
             else:
                 raise Exception("Invalid turing direction")
 
         elif states[i - 1].direction == Direction.SOUTH:
             if states[i].direction == Direction.EAST:
                 if states[i].y > states[i - 1].y:
-                    commands.append("BR{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90R/{motor_speed}/0;")
+                    cmd_id += 1
                 else:
-                    commands.append("FL{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90L/{motor_speed}/0;")
+                    cmd_id += 1
             elif states[i].direction == Direction.WEST:
                 if states[i].y > states[i - 1].y:
-                    commands.append("BL{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90L/{motor_speed}/0;")
+                    cmd_id += 1
                 else:
-                    commands.append("FR{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90R/{motor_speed}/0;")
+                    cmd_id += 1
             else:
                 raise Exception("Invalid turing direction")
 
         elif states[i - 1].direction == Direction.WEST:
             if states[i].direction == Direction.NORTH:
                 if states[i].y > states[i - 1].y:
-                    commands.append("FR{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90R/{motor_speed}/0;")
+                    cmd_id += 1
                 else:
-                    commands.append("BL{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90L/{motor_speed}/0;")
+                    cmd_id += 1
             elif states[i].direction == Direction.SOUTH:
                 if states[i].y > states[i - 1].y:
-                    commands.append("BR{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90R/{motor_speed}/0;")
+                    cmd_id += 1
                 else:
-                    commands.append("FL{}".format(steps))
+                    commands.append(f":{cmd_id}/MOTOR/TURN90L/{motor_speed}/0;")
+                    cmd_id += 1
             else:
                 raise Exception("Invalid turing direction")
         else:
@@ -181,29 +211,37 @@ def command_generator(states: list, obstacles: list) -> list:
             )
             commands.append(snap_cmd)
 
-    # Final command is the stop command (FIN)
-    commands.append("FIN")
+    # Final command is the stop command
+    commands.append(f":{cmd_id}/MOTOR/STOP/0/0;")
+    cmd_id += 1
+    commands.append("FIN")  # Keep FIN marker for higher-level processing
 
     # Compress commands if there are consecutive forward or backward commands
     compressed_commands = [commands[0]]
 
     for i in range(1, len(commands)):
-        # If both commands are BW
-        if commands[i].startswith("BW") and compressed_commands[-1].startswith("BW"):
-            # Get the number of steps of previous command
-            steps = int(compressed_commands[-1][2:])
-            # If steps are not 90, add 10 to the steps
-            if steps != 90:
-                compressed_commands[-1] = "BW{}".format(steps + 10)
+        # If both commands are REV (backward)
+        if "/MOTOR/REV/" in commands[i] and "/MOTOR/REV/" in compressed_commands[-1]:
+            # Extract distance from previous command
+            parts = compressed_commands[-1].split("/")
+            distance = int(parts[-1].rstrip(";"))
+            # If distance is not 90, add 10 to the distance
+            if distance != 90:
+                cmd_parts = compressed_commands[-1].split("/")
+                cmd_parts[-1] = f"{distance + 10};"
+                compressed_commands[-1] = "/".join(cmd_parts)
                 continue
 
-        # If both commands are FW
-        elif commands[i].startswith("FW") and compressed_commands[-1].startswith("FW"):
-            # Get the number of steps of previous command
-            steps = int(compressed_commands[-1][2:])
-            # If steps are not 90, add 10 to the steps
-            if steps != 90:
-                compressed_commands[-1] = "FW{}".format(steps + 10)
+        # If both commands are FWD (forward)
+        elif "/MOTOR/FWD/" in commands[i] and "/MOTOR/FWD/" in compressed_commands[-1]:
+            # Extract distance from previous command
+            parts = compressed_commands[-1].split("/")
+            distance = int(parts[-1].rstrip(";"))
+            # If distance is not 90, add 10 to the distance
+            if distance != 90:
+                cmd_parts = compressed_commands[-1].split("/")
+                cmd_parts[-1] = f"{distance + 10};"
+                compressed_commands[-1] = "/".join(cmd_parts)
                 continue
         
         # Otherwise, just add as usual

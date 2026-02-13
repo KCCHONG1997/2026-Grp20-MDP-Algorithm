@@ -21,7 +21,13 @@ def ui():
   textarea { width: 420px; height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   canvas { border: 1px solid #999; image-rendering: pixelated; }
   pre { background: #f6f8fa; padding: 8px; max-height: 220px; overflow:auto; }
-  button { padding: 6px 12px; }
+  button { padding: 6px 12px; margin-right: 8px; }
+  #timer { font-size: 32px; font-weight: bold; color: #007bff; margin: 16px 0; }
+  #timer.warning { color: #ff9800; }
+  #timer.danger { color: #d9534f; }
+  .status { margin: 8px 0; font-weight: 500; }
+  #progress { width: 100%; height: 24px; background: #f0f0f0; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  #progressBar { height: 100%; background: linear-gradient(90deg, #28a745, #007bff); transition: width 0.3s; }
 </style>
 <div id=\\"row\\">
   <div>
@@ -37,13 +43,19 @@ def ui():
   \\"robot_x\\": 1, \\"robot_y\\": 1, \\"robot_dir\\": 0,
   \\"retrying\\": false
 }</textarea><br/>
-    <button id=\\"run\\">Run /path</button>
+    <button id=\\"run\\">Calculate Path</button>
+    <button id=\\"animate\\">Start Animation</button>
+    <button id=\\"stop\\">Stop</button>
+    <div id=\\"timer\\">6:00</div>
+    <div id=\\"progress\\"><div id=\\"progressBar\\" style=\\"width: 0%\\"></div></div>
+    <div class=\\"status\\" id=\\"status\\">Ready</div>
     <h3>Commands</h3>
     <pre id=\\"cmds\\"></pre>
   </div>
   <div>
     <canvas id=\\"c\\" width=\\"520\\" height=\\"520\\"></canvas>
     <div>20×20 grid (10 cm per cell)</div>
+    <div style=\\"margin-top: 8px; font-size: 14px; color: #666;\\">Current Command: <span id=\\"currentCmd\\" style=\\"font-weight: bold;\\">-</span></div>
   </div>
 </div>
 <script>
@@ -129,6 +141,18 @@ function drawHeading(x,y,d,color='rgba(0,0,0,0.65)'){
   ctx.fill();
   ctx.restore();
 }
+function drawRobot(x, y, d) {
+  const [cx, cy] = toCanvas(x, y);
+  // Draw robot body (3x3 footprint)
+  ctx.fillStyle = 'rgba(0, 123, 255, 0.3)';
+  ctx.fillRect(cx - CELL*1.5, cy - CELL*1.5, CELL*3, CELL*3);
+  ctx.strokeStyle = '#007bff';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cx - CELL*1.5, cy - CELL*1.5, CELL*3, CELL*3);
+  // Draw direction indicator
+  drawHeading(x, y, d, '#007bff');
+  ctx.lineWidth = 1;
+}
 function drawPath(path){
   if (!path || path.length===0) return;
   ctx.strokeStyle = '#007bff'; ctx.lineWidth = 2;
@@ -152,16 +176,166 @@ function drawPath(path){
   ctx.fillStyle = '#ff9800';
   ctx.beginPath(); ctx.arc(ex,ey,5,0,Math.PI*2); ctx.fill();
 }
+// Animation state
+let pathData = null;
+let commandsData = null;
+let obstaclesData = null;
+let animationTimer = null;
+let countdownTimer = null;
+let timeRemaining = 360; // 6 minutes in seconds
+let currentStep = 0;
+let isAnimating = false;
+
 async function run(){
   drawGrid();
   const payload = JSON.parse(document.getElementById('obs').value);
   const res = await fetch('/path', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
   const json = await res.json();
-  drawObstacles(payload.obstacles || []);
-  drawPath(json.data?.path || []);
-  document.getElementById('cmds').textContent = JSON.stringify(json.data?.commands || [], null, 2);
+  
+  pathData = json.data?.path || [];
+  commandsData = json.data?.commands || [];
+  obstaclesData = payload.obstacles || [];
+  
+  drawObstacles(obstaclesData);
+  drawPath(pathData);
+  document.getElementById('cmds').textContent = JSON.stringify(commandsData, null, 2);
+  document.getElementById('status').textContent = `Path calculated: ${commandsData.length} commands`;
 }
+
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function updateTimer() {
+  const timerEl = document.getElementById('timer');
+  timerEl.textContent = formatTime(timeRemaining);
+  
+  if (timeRemaining <= 60) {
+    timerEl.className = 'danger';
+  } else if (timeRemaining <= 120) {
+    timerEl.className = 'warning';
+  } else {
+    timerEl.className = '';
+  }
+  
+  if (timeRemaining > 0) {
+    timeRemaining--;
+  } else {
+    stopAnimation();
+    document.getElementById('status').textContent = 'Time expired!';
+  }
+}
+
+function animateStep() {
+  if (!isAnimating || currentStep >= pathData.length) {
+    stopAnimation();
+    if (currentStep >= pathData.length) {
+      document.getElementById('status').textContent = 'Animation complete!';
+    }
+    return;
+  }
+  
+  const step = pathData[currentStep];
+  const cmd = commandsData[currentStep] || '-';
+  
+  // Redraw scene
+  drawGrid();
+  drawObstacles(obstaclesData);
+  
+  // Draw completed path
+  if (currentStep > 0) {
+    ctx.strokeStyle = '#28a745';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const [sx, sy] = toCanvas(pathData[0].x, pathData[0].y);
+    ctx.moveTo(sx, sy);
+    for (let i = 1; i <= currentStep; i++) {
+      const [px, py] = toCanvas(pathData[i].x, pathData[i].y);
+      ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+  
+  // Draw upcoming path (faded)
+  if (currentStep < pathData.length - 1) {
+    ctx.strokeStyle = 'rgba(0, 123, 255, 0.3)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const [sx, sy] = toCanvas(pathData[currentStep].x, pathData[currentStep].y);
+    ctx.moveTo(sx, sy);
+    for (let i = currentStep + 1; i < pathData.length; i++) {
+      const [px, py] = toCanvas(pathData[i].x, pathData[i].y);
+      ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+  
+  // Draw current robot position
+  drawRobot(step.x, step.y, step.d);
+  
+  // Update UI
+  document.getElementById('currentCmd').textContent = cmd;
+  document.getElementById('status').textContent = `Step ${currentStep + 1}/${pathData.length}`;
+  
+  const progress = ((currentStep + 1) / pathData.length) * 100;
+  document.getElementById('progressBar').style.width = `${progress}%`;
+  
+  currentStep++;
+}
+
+function startAnimation() {
+  if (!pathData || pathData.length === 0) {
+    alert('Please calculate path first!');
+    return;
+  }
+  
+  if (isAnimating) return;
+  
+  isAnimating = true;
+  currentStep = 0;
+  timeRemaining = 360; // Reset to 6 minutes
+  
+  // Calculate delay per step to fit in 6 minutes
+  const totalSteps = pathData.length;
+  const delayPerStep = (360 * 1000) / totalSteps; // milliseconds
+  
+  document.getElementById('status').textContent = 'Animation running...';
+  updateTimer();
+  
+  animationTimer = setInterval(animateStep, delayPerStep);
+  countdownTimer = setInterval(updateTimer, 1000);
+}
+
+function stopAnimation() {
+  isAnimating = false;
+  if (animationTimer) clearInterval(animationTimer);
+  if (countdownTimer) clearInterval(countdownTimer);
+  animationTimer = null;
+  countdownTimer = null;
+}
+
+function resetAnimation() {
+  stopAnimation();
+  currentStep = 0;
+  timeRemaining = 360;
+  document.getElementById('timer').textContent = '6:00';
+  document.getElementById('timer').className = '';
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('currentCmd').textContent = '-';
+  document.getElementById('status').textContent = 'Ready';
+  
+  if (pathData && obstaclesData) {
+    drawGrid();
+    drawObstacles(obstaclesData);
+    drawPath(pathData);
+  }
+}
+
 document.getElementById('run').onclick = run;
+document.getElementById('animate').onclick = startAnimation;
+document.getElementById('stop').onclick = resetAnimation;
 drawGrid();
 </script>
 """
@@ -238,11 +412,24 @@ def path_finding():
     for command in commands:
         if command.startswith("SNAP") or command.startswith("FIN"):
             continue
+        # Handle new motor protocol format: :[cmdId]/MOTOR/[command]/[param1]/[param2];
+        elif "/MOTOR/FWD/" in command or "/MOTOR/REV/" in command:
+            try:
+                # Extract distance from motor protocol command
+                parts = command.split("/")
+                distance = int(parts[-1].rstrip(";"))
+                i += distance // 10
+            except Exception:
+                pass
+        # Handle old format for backward compatibility
         elif command.startswith(("FW", "FS", "BW", "BS")):
             try:
                 i += int(command[2:]) // 10
             except Exception:
                 pass
+        # Handle turn commands (both old and new format)
+        elif "/MOTOR/TURN" in command or command.startswith(("FR", "FL", "BR", "BL")):
+            i += 1
         else:
             i += 1
 
